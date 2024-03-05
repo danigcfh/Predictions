@@ -1,0 +1,127 @@
+---
+title: "Predicting Classe"
+author: "DaniGCFH"
+date: "2024-03-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(corrplot)
+library(dplyr)
+library(DescTools)
+library(readr)
+
+```
+
+## Preparing the dataset
+
+Before starting any kind of training, the database has to be clean and usable. 
+```{r data, R.options=list(max.print=10),  message=FALSE}
+data <- read_csv("pml-training.csv")
+summary(data[1:10])
+```
+
+```{r complete cases,  message=FALSE}
+
+table(complete.cases(data))
+```
+
+Given that the training data contains a majority of non-complete observations (less than 400 from an original almost 20 thousand), the missing values were changed to reflect the mean value of each column, thus ensuring all observations can be used in the training models. 
+
+```{r preprocessing,  message=FALSE}
+# Extract numeric variables and homogeneize missing values to reflect mean values
+numeric_vars <- sapply(data, is.numeric)
+idata <- data
+idata[, numeric_vars] <- lapply(data[, numeric_vars], function(x) ifelse(is.na(x), mean(x, na.rm = TRUE), x))
+
+# Calculate means for each numeric variable in the training data
+training_means <- colMeans(idata[, numeric_vars], na.rm = TRUE)
+```
+
+A second modification was to identify the columns that wouldn't be helpful, and more specifically those that present such high correlation that including them wouldn't contribute to the model. Additionally, all variables related to time were eliminated to reduce the bias that can arise from the sequential nature of the data gathering in this context.
+
+```{r preprocessing2,  message=FALSE}
+
+# Create a correlation matrix
+cor_matrix <- cor(idata[, numeric_vars])
+
+# Find highly correlated variable pairs
+highly_correlated_pairs <- findCorrelation(cor_matrix, cutoff = 0.8)
+
+# Eliminate highly correlated pairs
+fdata <- idata[, -highly_correlated_pairs]
+fdata <- fdata[, -c(1:4)]
+
+# Filter only numeric variables for training
+numeric_vars_for_training <- sapply(fdata, is.numeric)
+fdata_numeric <- fdata[, numeric_vars_for_training]
+fdata_numeric$classe <- fdata$classe
+```
+Finally, only the numeric columns were kept to simplify the model further. 
+
+
+## Creating the model
+
+The model I chose to create is based on Random Forest model. This choice was made for several reasons: One of the primary strengths of these models lies in their ability to handle non-linear patterns within data, something that should be expected given the nature of the data present in this dataset. Also, Random Forests offer built-in feature importance measures,which is often useful to interpret the results. 
+
+The data at hand is both heterogenous and numerous, meaning there are many columns and that the relationships between measurements are not evident for an untrained eye such as mine (specially knowing these are highly specific measurements). In this context, Random Forest provides a relatively easy way to visualize which variables have the most meaningful effect.
+
+To limit the biaises that any model can have (namely, overfitting), cross-validation is a useful tool. It involves evaluating models in multiple subsets of data to improve estimates. The following code was used to implement these principles into the model by using 5 k-folds.
+
+
+```{r Model creation,  message=FALSE}
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Create a trainControl object for cross-validation
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = multiClassSummary)
+
+# Train the Random Forest model using train function from caret
+rf_model <- train(classe ~ ., data = fdata_numeric, method = "rf", trControl = ctrl)
+
+# Print the trained model
+print(rf_model)
+```
+The resulting model seems to be highly accurate (>99%), meaning the expected error rate is less than 1%.
+
+
+## Using the model to make predictions
+
+Before predicting values, I'll first preprocess the testing data to be comparable to the training data.
+
+```{r test preprocessing,  message=FALSE}
+
+test <- read_csv("pml-testing.csv")
+
+
+# Apply means from training to replace missing values in test data
+for (var in names(test)[numeric_vars]) {
+  test[[var]][is.na(test[[var]])] <- training_means[var]
+}
+
+# Eliminate highly correlated pairs (using the same 'highly_correlated_pairs' from training)
+test <- test[, -highly_correlated_pairs]
+test <- test[, -c(1:4)]
+
+# Filter only numeric variables for testing
+test_numeric <- test[, numeric_vars_for_training]
+
+```
+
+
+
+```{r test predictions,  message=FALSE}
+
+predictions <- predict(rf_model, newdata = test_numeric)
+test_numeric$predictions <- predictions
+View(test_numeric)
+predictions_prob <- predict(rf_model, newdata = test_numeric, type = "prob")
+print(predictions_prob)
+```
+
+The trained model predicts that, from the 20 observations, 7 correspond to the classe A, 8 to B, 3 to E and 1 for C and D. For almost every prediction, the confidence is above 90% which indicates a high degree of confidence in these predictions.
+
+
